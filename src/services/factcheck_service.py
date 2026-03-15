@@ -27,12 +27,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Fact-check RSS feeds (free, no key required)
 # ---------------------------------------------------------------------------
-_FACTCHECK_RSS_FEEDS: list[str] = [
-    "https://www.snopes.com/feed/",
-    "https://www.politifact.com/rss/all/",
-    "https://www.factcheck.org/feed/",
-    "https://fullfact.org/feed/rss.xml",
-]
+_FACTCHECK_RSS_FEEDS: dict[str, str] = {
+    "https://www.snopes.com/feed/": "Snopes",
+    "https://www.politifact.com/rss/all/": "PolitiFact",
+    "https://www.factcheck.org/feed/": "FactCheck.org",
+    "https://fullfact.org/feed/rss.xml": "Full Fact",
+}
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -144,7 +144,12 @@ def _parse_response(data: dict[str, Any]) -> list[FactCheckResult]:
 # ---------------------------------------------------------------------------
 
 def _fetch_url(url: str, timeout: int = 10) -> bytes | None:
-    """Fetch a URL with retry, returning raw bytes or None."""
+    """Fetch a URL with retry, returning raw bytes or None.
+
+    Only allows HTTPS URLs to prevent SSRF attacks.
+    """
+    if not url.startswith("https://"):
+        return None
     headers = {"User-Agent": "news-credibility-checker/0.1"}
     for attempt in range(config.MAX_RETRIES + 1):
         try:
@@ -176,7 +181,7 @@ def _search_factcheck_rss(claim_text: str) -> list[FactCheckResult]:
     results: list[FactCheckResult] = []
     limit = config.FACTCHECK_MAX_RESULTS
 
-    for feed_url in _FACTCHECK_RSS_FEEDS:
+    for feed_url, publisher in _FACTCHECK_RSS_FEEDS.items():
         if len(results) >= limit:
             break
         raw = _fetch_url(feed_url, timeout=config.REQUEST_TIMEOUT)
@@ -187,31 +192,20 @@ def _search_factcheck_rss(claim_text: str) -> list[FactCheckResult]:
         except ET.ParseError:
             continue
 
-        items = root.findall(".//item") or root.findall(
-            ".//{http://www.w3.org/2005/Atom}entry"
-        )
-
-        # Determine publisher from feed URL
-        publisher = "Unknown"
-        if "snopes" in feed_url:
-            publisher = "Snopes"
-        elif "politifact" in feed_url:
-            publisher = "PolitiFact"
-        elif "factcheck.org" in feed_url:
-            publisher = "FactCheck.org"
-        elif "fullfact" in feed_url:
-            publisher = "Full Fact"
+        items = root.findall(".//item")
+        if not items:
+            items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
 
         for item in items:
-            title_el = item.find("title") or item.find(
-                "{http://www.w3.org/2005/Atom}title"
-            )
-            link_el = item.find("link") or item.find(
-                "{http://www.w3.org/2005/Atom}link"
-            )
-            desc_el = item.find("description") or item.find(
-                "{http://www.w3.org/2005/Atom}summary"
-            )
+            title_el = item.find("title")
+            if title_el is None:
+                title_el = item.find("{http://www.w3.org/2005/Atom}title")
+            link_el = item.find("link")
+            if link_el is None:
+                link_el = item.find("{http://www.w3.org/2005/Atom}link")
+            desc_el = item.find("description")
+            if desc_el is None:
+                desc_el = item.find("{http://www.w3.org/2005/Atom}summary")
 
             title = (title_el.text or "") if title_el is not None else ""
             link_text = ""
@@ -287,14 +281,17 @@ def _search_factcheck_ddg(claim_text: str) -> list[FactCheckResult]:
         if not title:
             continue
 
-        # Determine publisher from URL
+        # Determine publisher from URL domain
         publisher = "Unknown"
-        url_lower = actual_url.lower()
-        if "snopes" in url_lower:
+        try:
+            domain = urllib.parse.urlparse(actual_url).netloc.lower().lstrip("www.")
+        except Exception:  # noqa: BLE001
+            domain = ""
+        if domain == "snopes.com" or domain.endswith(".snopes.com"):
             publisher = "Snopes"
-        elif "politifact" in url_lower:
+        elif domain == "politifact.com" or domain.endswith(".politifact.com"):
             publisher = "PolitiFact"
-        elif "factcheck.org" in url_lower:
+        elif domain == "factcheck.org" or domain.endswith(".factcheck.org"):
             publisher = "FactCheck.org"
 
         rating = _infer_rating_from_text(title + " " + snippet)

@@ -6,6 +6,7 @@ Tests for the three new features:
 """
 
 import unittest
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -368,7 +369,7 @@ class TestHNCollectorImprovements(unittest.TestCase):
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        meta: dict = {"source": "hackernews"}
+        meta: dict[str, Any] = {"source": "hackernews"}
         with patch("src.collectors.hackernews_collector.urlopen", return_value=mock_resp):
             records = _search_hn("test query", 5, meta)
             self.assertEqual(len(records), 1)
@@ -387,7 +388,7 @@ class TestHNCollectorImprovements(unittest.TestCase):
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        meta: dict = {"source": "hackernews"}
+        meta: dict[str, Any] = {"source": "hackernews"}
         with patch("src.collectors.hackernews_collector.urlopen", return_value=mock_resp):
             records = _search_hn("obscure query", 5, meta)
             self.assertEqual(len(records), 0)
