@@ -227,6 +227,64 @@ class TestCredibilityScoringIntegration(unittest.TestCase):
         self.assertIn("explanation", result)
         self.assertIn("fact_check_rating", result)
 
+    def test_keyword_only_evidence_scores_below_threshold(self):
+        """Keyword-only matched evidence (no semantic match) should score below 70."""
+        # Simulate web records that matched keywords but have no semantic match
+        web_records = [
+            {"source": "web", "title": "News A", "snippet": "Some text",
+             "domain": "bbc.com", "published_date": "2024-01-01", "url": "https://bbc.com/1"},
+            {"source": "web", "title": "News B", "snippet": "More text",
+             "domain": "reuters.com", "published_date": "2024-01-01", "url": "https://reuters.com/2"},
+            {"source": "web", "title": "News C", "snippet": "Other text",
+             "domain": "nytimes.com", "published_date": "2024-01-01", "url": "https://nytimes.com/3"},
+        ]
+        wiki_records = [
+            {"source": "wikipedia", "title": "Topic", "summary": "Wikipedia article",
+             "url": "https://en.wikipedia.org/wiki/Topic"},
+        ]
+        # Passing empty semantic_matches means all evidence is keyword-only
+        result = compute_score(
+            claim="Test claim about something",
+            reddit_records=[],
+            wiki_records=wiki_records,
+            web_records=web_records,
+            hn_records=[],
+            semantic_matches=[],
+        )
+        # Keyword-only evidence should be discounted — score should be below 70
+        self.assertLess(result["score"], 70)
+
+    def test_semantic_matches_boost_corroboration(self):
+        """Semantically verified evidence should score higher than keyword-only."""
+        web_records = [
+            {"source": "web", "title": "Climate change confirmed",
+             "snippet": "Scientists confirm climate change",
+             "domain": "bbc.com", "published_date": "2024-01-01",
+             "url": "https://bbc.com/climate"},
+        ]
+        semantic_matches = [
+            {"source": "web", "url": "https://bbc.com/climate",
+             "similarity": 0.85, "title": "Climate change confirmed"},
+        ]
+        result_with_semantic = compute_score(
+            claim="Climate change is real",
+            reddit_records=[],
+            wiki_records=[],
+            web_records=web_records,
+            semantic_matches=semantic_matches,
+        )
+        result_without_semantic = compute_score(
+            claim="Climate change is real",
+            reddit_records=[],
+            wiki_records=[],
+            web_records=web_records,
+            semantic_matches=[],
+        )
+        # With semantic match, corroboration should be higher
+        self.assertGreaterEqual(
+            result_with_semantic["score"], result_without_semantic["score"]
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test: Fact-check free fallback functions
@@ -282,21 +340,21 @@ class TestFactCheckFreeFallback(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Test: Web collector DuckDuckGo fallback
+# Test: Web collector improvements
 # ---------------------------------------------------------------------------
 
-from src.collectors.web_collector import _collect_duckduckgo, _collect_rss
+from src.collectors.web_collector import _collect_rss
 
 
 class TestWebCollectorImprovements(unittest.TestCase):
     """Tests for web collector improvements."""
 
-    def test_rss_keyword_matching_relaxed(self):
-        """Verify RSS matching works with single keyword overlap."""
+    def test_rss_keyword_matching_requires_two(self):
+        """Verify RSS matching requires at least 2 keyword matches."""
         from xml.etree.ElementTree import Element, SubElement, tostring
         from unittest.mock import patch
 
-        # Build a minimal RSS feed with an item matching 1 keyword
+        # Build a minimal RSS feed with an item matching only 1 keyword
         rss = Element("rss")
         channel = SubElement(rss, "channel")
         item = SubElement(channel, "item")
@@ -308,30 +366,30 @@ class TestWebCollectorImprovements(unittest.TestCase):
         feed_xml = tostring(rss, encoding="unicode")
 
         with patch("src.collectors.web_collector._fetch_url", return_value=feed_xml.encode("utf-8")):
+            # Only 1 keyword match ("planet") should NOT be enough
             records = _collect_rss("planet habitable zone", limit=5)
-            # Should match because "planet" (>= 3 chars) appears in the item
-            self.assertGreaterEqual(len(records), 1)
-            self.assertEqual(records[0]["title"], "New planet discovered by NASA")
+            self.assertEqual(len(records), 0)
 
-    def test_duckduckgo_parses_html(self):
-        """Test DuckDuckGo HTML parser with sample HTML."""
+    def test_rss_keyword_matching_two_keywords(self):
+        """Verify RSS matching works with two keyword matches."""
+        from xml.etree.ElementTree import Element, SubElement, tostring
         from unittest.mock import patch
 
-        sample_html = '''
-        <div class="result">
-            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fnews&amp;rut=abc">
-                Test News Article
-            </a>
-            <a class="result__snippet">A snippet about the article.</a>
-        </div>
-        '''
+        rss = Element("rss")
+        channel = SubElement(rss, "channel")
+        item = SubElement(channel, "item")
+        SubElement(item, "title").text = "New habitable planet discovered by NASA"
+        SubElement(item, "link").text = "https://example.com/article"
+        SubElement(item, "description").text = "Scientists found a habitable planet."
+        SubElement(item, "pubDate").text = "Mon, 01 Jan 2024 00:00:00 GMT"
 
-        with patch("src.collectors.web_collector._fetch_url", return_value=sample_html.encode("utf-8")):
-            records = _collect_duckduckgo("test query", limit=5)
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["title"], "Test News Article")
-            self.assertEqual(records[0]["url"], "https://example.com/news")
-            self.assertEqual(records[0]["provider"], "duckduckgo")
+        feed_xml = tostring(rss, encoding="unicode")
+
+        with patch("src.collectors.web_collector._fetch_url", return_value=feed_xml.encode("utf-8")):
+            # 2 keyword matches ("planet", "habitable") should pass
+            records = _collect_rss("planet habitable zone", limit=5)
+            self.assertGreaterEqual(len(records), 1)
+            self.assertEqual(records[0]["title"], "New habitable planet discovered by NASA")
 
 
 # ---------------------------------------------------------------------------
@@ -344,19 +402,61 @@ from src.collectors.hackernews_collector import _search_hn
 class TestHNCollectorImprovements(unittest.TestCase):
     """Tests for Hacker News collector improvements."""
 
-    def test_search_hn_returns_records(self):
-        """Test _search_hn parses Algolia response correctly."""
+    def test_search_hn_returns_records_with_keyword_match(self):
+        """Test _search_hn only returns records matching ≥2 keywords."""
         from unittest.mock import patch, MagicMock
         import json
 
         sample_response = json.dumps({
             "hits": [
                 {
-                    "title": "Test Story",
+                    "title": "Test Story about climate change",
                     "url": "https://example.com/story",
                     "created_at": "2024-01-01T00:00:00.000Z",
                     "points": 100,
                     "num_comments": 50,
+                    "author": "testuser",
+                    "objectID": "12345",
+                    "story_text": "",
+                },
+                {
+                    "title": "Unrelated post about cooking",
+                    "url": "https://example.com/cooking",
+                    "created_at": "2024-01-01T00:00:00.000Z",
+                    "points": 50,
+                    "num_comments": 10,
+                    "author": "chef",
+                    "objectID": "12346",
+                    "story_text": "",
+                },
+            ]
+        }).encode("utf-8")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = sample_response
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        meta: dict[str, Any] = {"source": "hackernews"}
+        with patch("src.collectors.hackernews_collector.urlopen", return_value=mock_resp):
+            # Query has "climate" and "change" — first story matches both
+            records = _search_hn("climate change", 5, meta)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["title"], "Test Story about climate change")
+
+    def test_search_hn_filters_weak_matches(self):
+        """Test _search_hn filters out stories with <2 keyword matches."""
+        from unittest.mock import patch, MagicMock
+        import json
+
+        sample_response = json.dumps({
+            "hits": [
+                {
+                    "title": "Random story about technology",
+                    "url": "https://example.com/tech",
+                    "created_at": "2024-01-01T00:00:00.000Z",
+                    "points": 200,
+                    "num_comments": 80,
                     "author": "testuser",
                     "objectID": "12345",
                     "story_text": "",
@@ -371,10 +471,9 @@ class TestHNCollectorImprovements(unittest.TestCase):
 
         meta: dict[str, Any] = {"source": "hackernews"}
         with patch("src.collectors.hackernews_collector.urlopen", return_value=mock_resp):
-            records = _search_hn("test query", 5, meta)
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["title"], "Test Story")
-            self.assertEqual(records[0]["source"], "hackernews")
+            # Query "climate change" — story about "technology" matches 0 keywords
+            records = _search_hn("climate change", 5, meta)
+            self.assertEqual(len(records), 0)
 
     def test_search_hn_empty_response(self):
         """Test _search_hn handles empty response."""

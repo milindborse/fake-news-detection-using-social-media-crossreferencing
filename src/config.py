@@ -48,7 +48,7 @@ WEIGHT_RECENCY: float = float(os.getenv("WEIGHT_RECENCY", "0.15"))
 # ---------------------------------------------------------------------------
 # Credibility thresholds
 # ---------------------------------------------------------------------------
-LABEL_TRUE_THRESHOLD: int = int(os.getenv("LABEL_TRUE_THRESHOLD", "60"))
+LABEL_TRUE_THRESHOLD: int = int(os.getenv("LABEL_TRUE_THRESHOLD", "70"))
 LABEL_FALSE_THRESHOLD: int = int(os.getenv("LABEL_FALSE_THRESHOLD", "40"))
 
 # ---------------------------------------------------------------------------

@@ -89,6 +89,7 @@ def compute_score(
     web_records: list[dict[str, Any]],
     hn_records: list[dict[str, Any]] | None = None,
     factcheck_results: list[dict[str, Any]] | None = None,
+    semantic_matches: list[dict[str, Any]] | None = None,
 ) -> ScoreResult:
     """Compute a credibility score and generate signal breakdown.
 
@@ -99,6 +100,9 @@ def compute_score(
         web_records: Records from web collector.
         hn_records: Records from Hacker News collector (optional).
         factcheck_results: Results from the Google Fact Check API (optional).
+        semantic_matches: Semantically matched evidence articles (optional).
+            When provided, only evidence that appears in this list is
+            counted as strong corroboration.
 
     Returns:
         A :data:`ScoreResult` dict with keys:
@@ -108,31 +112,69 @@ def compute_score(
         hn_records = []
     if factcheck_results is None:
         factcheck_results = []
+    if semantic_matches is None:
+        semantic_matches = []
 
     all_records = reddit_records + wiki_records + web_records + hn_records
     total_evidence = len(all_records)
+
+    # Build a set of URLs that are semantically verified
+    _semantic_urls: set[str] = {m.get("url", "") for m in semantic_matches if m.get("url")}
+    has_semantic_data = len(semantic_matches) > 0
 
     signals: list[Signal] = []
 
     # ------------------------------------------------------------------
     # Signal 1: Independent corroboration
     # ------------------------------------------------------------------
-    # Count distinct domains/sources that mention the claim
-    domains: set[str] = set()
+    # Count distinct domains/sources that mention the claim.
+    # When semantic matching data is available, only semantically
+    # verified evidence counts at full weight; keyword-only matches
+    # are heavily discounted.
+    semantic_domains: set[str] = set()
+    keyword_only_domains: set[str] = set()
+
     for r in web_records:
         d = r.get("domain", "")
-        if d:
-            domains.add(d.lstrip("www."))
-    if reddit_records:
-        domains.add("reddit.com")
-    if wiki_records:
-        domains.add("wikipedia.org")
-    if hn_records:
-        domains.add("news.ycombinator.com")
+        if not d:
+            continue
+        d = d.lstrip("www.")
+        url = r.get("url", "")
+        if has_semantic_data and url and url in _semantic_urls:
+            semantic_domains.add(d)
+        elif not has_semantic_data:
+            keyword_only_domains.add(d)
+        else:
+            keyword_only_domains.add(d)
 
-    corroboration_raw = len(domains)
+    for r in reddit_records:
+        url = r.get("url", "")
+        if has_semantic_data and url and url in _semantic_urls:
+            semantic_domains.add("reddit.com")
+        elif not has_semantic_data:
+            keyword_only_domains.add("reddit.com")
+        else:
+            keyword_only_domains.add("reddit.com")
+
+    for r in hn_records:
+        url = r.get("url", "")
+        if has_semantic_data and url and url in _semantic_urls:
+            semantic_domains.add("news.ycombinator.com")
+        elif not has_semantic_data:
+            keyword_only_domains.add("news.ycombinator.com")
+        else:
+            keyword_only_domains.add("news.ycombinator.com")
+
+    # Wikipedia only gets counted at 0.3x weight toward corroboration
+    if wiki_records:
+        keyword_only_domains.add("wikipedia.org")
+
+    # Semantic matches count fully; keyword-only matches count at 0.3x
+    effective_domains = len(semantic_domains) + len(keyword_only_domains) * 0.3
+    corroboration_raw = len(semantic_domains) + len(keyword_only_domains)
+
     # Normalise: 0 domains → 0, 1 → 0.2, 3 → 0.6, 5+ → 1.0
-    corroboration_value = min(1.0, corroboration_raw / 5.0)
+    corroboration_value = min(1.0, effective_domains / 5.0)
 
     signals.append(
         {
@@ -141,8 +183,9 @@ def compute_score(
             "weight": config.WEIGHT_CORROBORATION,
             "contribution": round(corroboration_value * config.WEIGHT_CORROBORATION * 100, 1),
             "rationale": (
-                f"Found mentions across {corroboration_raw} distinct source(s)/domain(s). "
-                "More independent sources increase credibility."
+                f"Found mentions across {corroboration_raw} source(s)/domain(s) "
+                f"({len(semantic_domains)} semantically verified). "
+                "Only semantically verified sources count at full weight."
             ),
         }
     )
