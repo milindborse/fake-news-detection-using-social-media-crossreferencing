@@ -46,9 +46,26 @@ def collect(
         return [], {"source": "hackernews", "skipped": True, "reason": "disabled in config"}
 
     limit = max_results if max_results is not None else config.HN_MAX_RESULTS
-    query = build_search_query(claim, max_keywords=6)
+    query = build_search_query(claim, max_keywords=4)
     meta: dict[str, Any] = {"source": "hackernews", "query": query}
 
+    records = _search_hn(query, limit, meta)
+
+    # Fallback: retry with fewer keywords for a broader search
+    if not records and not meta.get("error"):
+        broader_query = build_search_query(claim, max_keywords=2)
+        if broader_query != query:
+            meta["fallback_query"] = broader_query
+            records = _search_hn(broader_query, limit, meta)
+
+    meta["count"] = len(records)
+    if "error" not in meta:
+        meta["error"] = False
+    return records, meta
+
+
+def _search_hn(query: str, limit: int, meta: dict[str, Any]) -> list[HNRecord]:
+    """Execute a single HN Algolia search and return records."""
     encoded_query = urllib.parse.quote(query)
     url = _HN_SEARCH_URL.format(query=encoded_query, limit=limit)
 
@@ -86,18 +103,16 @@ def collect(
                     }
                 )
 
-            meta["count"] = len(records)
-            meta["error"] = False
-            return records, meta
+            return records
 
         except Exception as exc:  # noqa: BLE001
             if attempt < config.MAX_RETRIES:
                 time.sleep(2 ** attempt)
                 continue
             meta.update({"error": True, "message": str(exc)})
-            return [], meta
+            return []
 
-    return records, meta
+    return records
 
 
 def _domain_from_url(url: str) -> str:

@@ -121,7 +121,7 @@ WEIGHT_FACTCHECK: float = float(os.getenv("WEIGHT_FACTCHECK", "0.40"))
 ENABLE_SEMANTIC: bool = os.getenv("ENABLE_SEMANTIC", "true").lower() == "true"
 SEMANTIC_MODEL_NAME: str = os.getenv("SEMANTIC_MODEL_NAME", "all-MiniLM-L6-v2")
 SEMANTIC_SIMILARITY_THRESHOLD: float = float(
-    os.getenv("SEMANTIC_SIMILARITY_THRESHOLD", "0.65")
+    os.getenv("SEMANTIC_SIMILARITY_THRESHOLD", "0.40")
 )
 SEMANTIC_MAX_TEXT_LENGTH: int = int(os.getenv("SEMANTIC_MAX_TEXT_LENGTH", "512"))
 
