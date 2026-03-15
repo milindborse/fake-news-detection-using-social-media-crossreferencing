@@ -142,8 +142,6 @@ def compute_score(
         url = r.get("url", "")
         if has_semantic_data and url and url in _semantic_urls:
             semantic_domains.add(d)
-        elif not has_semantic_data:
-            keyword_only_domains.add(d)
         else:
             keyword_only_domains.add(d)
 
@@ -151,8 +149,6 @@ def compute_score(
         url = r.get("url", "")
         if has_semantic_data and url and url in _semantic_urls:
             semantic_domains.add("reddit.com")
-        elif not has_semantic_data:
-            keyword_only_domains.add("reddit.com")
         else:
             keyword_only_domains.add("reddit.com")
 
@@ -160,8 +156,6 @@ def compute_score(
         url = r.get("url", "")
         if has_semantic_data and url and url in _semantic_urls:
             semantic_domains.add("news.ycombinator.com")
-        elif not has_semantic_data:
-            keyword_only_domains.add("news.ycombinator.com")
         else:
             keyword_only_domains.add("news.ycombinator.com")
 

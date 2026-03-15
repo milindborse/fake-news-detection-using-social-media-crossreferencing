@@ -271,6 +271,7 @@ class TestCredibilityScoringIntegration(unittest.TestCase):
             reddit_records=[],
             wiki_records=[],
             web_records=web_records,
+            hn_records=[],
             semantic_matches=semantic_matches,
         )
         result_without_semantic = compute_score(
@@ -278,6 +279,7 @@ class TestCredibilityScoringIntegration(unittest.TestCase):
             reddit_records=[],
             wiki_records=[],
             web_records=web_records,
+            hn_records=[],
             semantic_matches=[],
         )
         # With semantic match, corroboration should be higher
