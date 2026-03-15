@@ -21,6 +21,7 @@ REDDIT_USER_AGENT: str = os.getenv("REDDIT_USER_AGENT", "fake-news-detector/0.1"
 ENABLE_REDDIT: bool = os.getenv("ENABLE_REDDIT", "true").lower() == "true"
 ENABLE_WIKIPEDIA: bool = os.getenv("ENABLE_WIKIPEDIA", "true").lower() == "true"
 ENABLE_WEB: bool = os.getenv("ENABLE_WEB", "true").lower() == "true"
+ENABLE_HACKERNEWS: bool = os.getenv("ENABLE_HACKERNEWS", "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # HTTP / network settings
@@ -32,8 +33,9 @@ MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "2"))
 # Collection limits
 # ---------------------------------------------------------------------------
 REDDIT_MAX_RESULTS: int = int(os.getenv("REDDIT_MAX_RESULTS", "20"))
-WIKIPEDIA_MAX_RESULTS: int = int(os.getenv("WIKIPEDIA_MAX_RESULTS", "5"))
+WIKIPEDIA_MAX_RESULTS: int = int(os.getenv("WIKIPEDIA_MAX_RESULTS", "3"))
 WEB_MAX_RESULTS: int = int(os.getenv("WEB_MAX_RESULTS", "10"))
+HN_MAX_RESULTS: int = int(os.getenv("HN_MAX_RESULTS", "15"))
 
 # ---------------------------------------------------------------------------
 # Scoring weights  (must sum to 1.0)
@@ -93,6 +95,13 @@ QUALITY_SUBREDDITS: list[str] = [
 
 # Minimum Reddit post score to be considered a quality signal
 REDDIT_MIN_SCORE: int = int(os.getenv("REDDIT_MIN_SCORE", "5"))
+
+# Minimum Hacker News points to be considered a quality signal
+HN_MIN_POINTS: int = int(os.getenv("HN_MIN_POINTS", "10"))
+
+# Wikipedia quality discount factor (0.0–1.0).
+# Lower values reduce Wikipedia's influence on the credibility score.
+WIKIPEDIA_QUALITY_WEIGHT: float = float(os.getenv("WIKIPEDIA_QUALITY_WEIGHT", "0.3"))
 
 # ---------------------------------------------------------------------------
 # Contradiction / debunking keywords

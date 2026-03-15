@@ -27,7 +27,7 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 try:
     from src import config
-    from src.collectors import reddit_collector, web_collector, wikipedia_collector
+    from src.collectors import reddit_collector, web_collector, wikipedia_collector, hackernews_collector
     from src.nlp.claim_normalizer import (
         build_search_query,
         extract_keywords,
@@ -48,12 +48,28 @@ except ImportError as e:
 st.markdown(
     """
     <style>
+    /* Sidebar: 30% width */
+    [data-testid="stSidebar"] {
+        min-width: 20%;
+        max-width: 30%;
+    }
+    [data-testid="stSidebar"] > div:first-child {
+        width: 100%;
+    }
     .score-badge {
         font-size: 3rem;
         font-weight: bold;
         padding: 0.5rem 1.5rem;
         border-radius: 12px;
         display: inline-block;
+    }
+    .verdict-badge {
+        font-size: 2rem;
+        font-weight: bold;
+        padding: 0.6rem 1.2rem;
+        border-radius: 12px;
+        display: inline-block;
+        margin-top: 0.2rem;
     }
     .badge-green  { background: #d4edda; color: #155724; }
     .badge-orange { background: #fff3cd; color: #856404; }
@@ -93,6 +109,10 @@ def render_sidebar() -> None:
         st.markdown(
             f"{'✅' if config.ENABLE_WEB else '⚠️'} **Web / News** "
             f"({'enabled' if config.ENABLE_WEB else 'disabled'})"
+        )
+        st.markdown(
+            f"{'✅' if config.ENABLE_HACKERNEWS else '⚠️'} **Hacker News** "
+            f"({'enabled' if config.ENABLE_HACKERNEWS else 'disabled'})"
         )
 
         st.divider()
@@ -168,6 +188,26 @@ def _render_web_evidence(records: list[dict]) -> None:
         )
 
 
+def _render_hackernews_evidence(records: list[dict]) -> None:
+    if not records:
+        st.info("No Hacker News evidence found.")
+        return
+    for r in records:
+        quality_badge = "⭐" if r.get("is_quality") else ""
+        points_str = f"▲ {r.get('points', 0)}"
+        st.markdown(
+            f"""<div class="evidence-card">
+            <strong>{quality_badge} {r.get('title', 'No title')}</strong><br/>
+            <small>{points_str} points &nbsp;|&nbsp;
+            {r.get('num_comments', 0)} comments &nbsp;|&nbsp;
+            {r.get('author', '?')} &nbsp;|&nbsp; {r.get('created_utc', '')[:10]}</small><br/>
+            <small>{r.get('text', '')[:200]}</small><br/>
+            <a href="{r.get('url', '#')}" target="_blank">View on HN ↗</a>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+
 def _render_signal_breakdown(signals: list[dict]) -> None:
     """Render the signal breakdown table."""
     if not signals:
@@ -203,6 +243,7 @@ def run_analysis(claim: str) -> None:
     reddit_records: list[dict] = []
     wiki_records: list[dict] = []
     web_records: list[dict] = []
+    hn_records: list[dict] = []
     collector_metas: list[dict] = []
 
     # ------------------------------------------------------------------
@@ -220,7 +261,7 @@ def run_analysis(claim: str) -> None:
     # 2. Collect Wikipedia evidence
     # ------------------------------------------------------------------
     status_text.text("Querying Wikipedia…")
-    progress.progress(35)
+    progress.progress(25)
     try:
         wiki_records, wiki_meta = wikipedia_collector.collect(claim)
         collector_metas.append(wiki_meta)
@@ -231,7 +272,7 @@ def run_analysis(claim: str) -> None:
     # 3. Collect web evidence
     # ------------------------------------------------------------------
     status_text.text("Searching web/news sources…")
-    progress.progress(60)
+    progress.progress(45)
     try:
         web_records, web_meta = web_collector.collect(claim)
         collector_metas.append(web_meta)
@@ -239,12 +280,23 @@ def run_analysis(claim: str) -> None:
         collector_metas.append({"source": "web", "error": True, "message": str(exc)})
 
     # ------------------------------------------------------------------
-    # 4. Compute score
+    # 4. Collect Hacker News evidence
+    # ------------------------------------------------------------------
+    status_text.text("Searching Hacker News…")
+    progress.progress(65)
+    try:
+        hn_records, hn_meta = hackernews_collector.collect(claim)
+        collector_metas.append(hn_meta)
+    except Exception as exc:  # noqa: BLE001
+        collector_metas.append({"source": "hackernews", "error": True, "message": str(exc)})
+
+    # ------------------------------------------------------------------
+    # 5. Compute score
     # ------------------------------------------------------------------
     status_text.text("Computing credibility score…")
     progress.progress(85)
     try:
-        result = compute_score(claim, reddit_records, wiki_records, web_records)
+        result = compute_score(claim, reddit_records, wiki_records, web_records, hn_records)
     except Exception as exc:  # noqa: BLE001
         st.error(f"Scoring engine error: {exc}")
         st.text(traceback.format_exc())
@@ -267,7 +319,8 @@ def run_analysis(claim: str) -> None:
         f"Analyzed at {analyzed_at[:19].replace('T', ' ')} UTC  |  "
         f"Reddit: {sc.get('reddit', 0)} result(s)  |  "
         f"Wikipedia: {sc.get('wikipedia', 0)} result(s)  |  "
-        f"Web: {sc.get('web', 0)} result(s)"
+        f"Web: {sc.get('web', 0)} result(s)  |  "
+        f"Hacker News: {sc.get('hackernews', 0)} result(s)"
     )
 
     # Score + label
@@ -278,7 +331,7 @@ def run_analysis(claim: str) -> None:
         color, "badge-orange"
     )
 
-    col_score, col_label, col_summary = st.columns([1, 1, 3])
+    col_score, col_label = st.columns(2)
     with col_score:
         st.markdown(
             f'<div class="score-badge {badge_class}">{score}/100</div>',
@@ -286,10 +339,15 @@ def run_analysis(claim: str) -> None:
         )
         st.markdown("**Credibility Score**")
     with col_label:
-        st.metric("Verdict", label)
-    with col_summary:
-        st.markdown("**Summary**")
-        st.write(result.get("summary", "No summary available."))
+        st.markdown(
+            f'<div class="verdict-badge {badge_class}">{label}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("**Verdict**")
+
+    st.markdown("")
+    st.markdown("**Summary**")
+    st.write(result.get("summary", "No summary available."))
 
     # ------------------------------------------------------------------
     # Explainability panel
@@ -328,6 +386,7 @@ def run_analysis(claim: str) -> None:
         [
             f"🌐 Web ({sc.get('web', 0)})",
             f"📰 Reddit ({sc.get('reddit', 0)})",
+            f"🔶 Hacker News ({sc.get('hackernews', 0)})",
             f"📖 Wikipedia ({sc.get('wikipedia', 0)})",
         ]
     )
@@ -336,6 +395,8 @@ def run_analysis(claim: str) -> None:
     with tabs[1]:
         _render_reddit_evidence(reddit_records)
     with tabs[2]:
+        _render_hackernews_evidence(hn_records)
+    with tabs[3]:
         _render_wikipedia_evidence(wiki_records)
 
     # ------------------------------------------------------------------
@@ -363,7 +424,7 @@ def main() -> None:
 
     st.title("🔍 Fake News Detector")
     st.markdown(
-        "Verify a news claim by cross-referencing **Reddit**, **Wikipedia**, "
+        "Verify a news claim by cross-referencing **Reddit**, **Hacker News**, **Wikipedia**, "
         "and **web/news sources**. Get an explainable credibility score."
     )
 
@@ -418,7 +479,7 @@ def main() -> None:
         with col_b:
             st.markdown(
                 "**2. We search the web**\n\n"
-                "The app queries Reddit, Wikipedia, and news sources in real time."
+                "The app queries Reddit, Hacker News, Wikipedia, and news sources in real time."
             )
         with col_c:
             st.markdown(
