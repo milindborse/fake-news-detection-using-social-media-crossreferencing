@@ -85,6 +85,7 @@ def compute_score(
     reddit_records: list[dict[str, Any]],
     wiki_records: list[dict[str, Any]],
     web_records: list[dict[str, Any]],
+    hn_records: list[dict[str, Any]] | None = None,
 ) -> ScoreResult:
     """Compute a credibility score and generate signal breakdown.
 
@@ -93,12 +94,16 @@ def compute_score(
         reddit_records: Records from Reddit collector.
         wiki_records: Records from Wikipedia collector.
         web_records: Records from web collector.
+        hn_records: Records from Hacker News collector (optional).
 
     Returns:
         A :data:`ScoreResult` dict with keys:
         ``score``, ``label``, ``signal_breakdown``, ``summary``.
     """
-    all_records = reddit_records + wiki_records + web_records
+    if hn_records is None:
+        hn_records = []
+
+    all_records = reddit_records + wiki_records + web_records + hn_records
     total_evidence = len(all_records)
 
     signals: list[Signal] = []
@@ -116,6 +121,8 @@ def compute_score(
         domains.add("reddit.com")
     if wiki_records:
         domains.add("wikipedia.org")
+    if hn_records:
+        domains.add("news.ycombinator.com")
 
     corroboration_raw = len(domains)
     # Normalise: 0 domains → 0, 1 → 0.2, 3 → 0.6, 5+ → 1.0
@@ -189,9 +196,17 @@ def compute_score(
             quality_reddit_hits += 1
             quality_hits += 1
 
-    # Wikipedia is always considered a quality source
+    # Hacker News quality heuristic
+    for r in hn_records:
+        total_checked += 1
+        if r.get("is_quality", False):
+            quality_hits += 1
+
+    # Wikipedia – discounted quality contribution
+    wiki_weight = config.WIKIPEDIA_QUALITY_WEIGHT
     if wiki_records:
-        quality_hits += len(wiki_records)
+        wiki_quality = len(wiki_records) * wiki_weight
+        quality_hits += wiki_quality
         total_checked += len(wiki_records)
 
     source_quality_value = (quality_hits / max(total_checked, 1)) if total_checked else 0.3
@@ -289,6 +304,7 @@ def compute_score(
             "reddit": len(reddit_records),
             "wikipedia": len(wiki_records),
             "web": len(web_records),
+            "hackernews": len(hn_records),
         },
         "analyzed_at": datetime.now(tz=timezone.utc).isoformat(),
     }
