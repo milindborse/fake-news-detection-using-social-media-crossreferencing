@@ -4,3 +4,5 @@ praw>=7.7.1
 wikipedia>=1.4.0
 pandas>=2.0.0
 requests>=2.31.0
+sentence-transformers>=2.2.0
+numpy>=1.24.0

@@ -5,8 +5,9 @@ from collected evidence.
 Signals (weighted):
     1. Corroboration  – independent sources/domains confirm the claim.
     2. Contradiction  – evidence contains debunking/hoax keywords.
-    3. Source quality – reliable domain whitelist + Reddit quality heuristics.
+    3. Source quality – domain reputation scoring (granular 0–1 weights).
     4. Recency        – how recent the evidence is (newer = more relevant).
+    5. Fact-check     – professional fact-check verdicts (when available).
 """
 
 import math
@@ -15,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src import config
+from src.scoring.source_reputation import get_domain_score
 
 # ---------------------------------------------------------------------------
 # Type definitions
@@ -86,6 +88,7 @@ def compute_score(
     wiki_records: list[dict[str, Any]],
     web_records: list[dict[str, Any]],
     hn_records: list[dict[str, Any]] | None = None,
+    factcheck_results: list[dict[str, Any]] | None = None,
 ) -> ScoreResult:
     """Compute a credibility score and generate signal breakdown.
 
@@ -95,6 +98,7 @@ def compute_score(
         wiki_records: Records from Wikipedia collector.
         web_records: Records from web collector.
         hn_records: Records from Hacker News collector (optional).
+        factcheck_results: Results from the Google Fact Check API (optional).
 
     Returns:
         A :data:`ScoreResult` dict with keys:
@@ -102,6 +106,8 @@ def compute_score(
     """
     if hn_records is None:
         hn_records = []
+    if factcheck_results is None:
+        factcheck_results = []
 
     all_records = reddit_records + wiki_records + web_records + hn_records
     total_evidence = len(all_records)
@@ -176,40 +182,45 @@ def compute_score(
     )
 
     # ------------------------------------------------------------------
-    # Signal 3: Source quality
+    # Signal 3: Source quality (domain reputation scoring)
     # ------------------------------------------------------------------
-    quality_hits = 0
-    total_checked = 0
+    # Use granular domain reputation scores instead of binary whitelist
+    quality_scores: list[float] = []
 
     for r in web_records:
-        total_checked += 1
-        if _is_reliable_domain(r.get("domain", "")):
-            quality_hits += 1
+        domain = r.get("domain", "")
+        url = r.get("url", domain)
+        quality_scores.append(get_domain_score(url if url else domain))
 
-    # Reddit quality heuristic
-    quality_reddit_hits = 0
+    # Reddit quality heuristic combined with domain reputation
+    reddit_base_score = get_domain_score("reddit.com")
     for r in reddit_records:
-        total_checked += 1
         is_quality_sub = r.get("is_quality_subreddit", False)
         has_min_score = r.get("score", 0) >= config.REDDIT_MIN_SCORE
         if is_quality_sub and has_min_score:
-            quality_reddit_hits += 1
-            quality_hits += 1
+            quality_scores.append(min(1.0, reddit_base_score + 0.2))
+        else:
+            quality_scores.append(reddit_base_score)
 
-    # Hacker News quality heuristic
+    # Hacker News quality heuristic combined with domain reputation
+    hn_base_score = get_domain_score("news.ycombinator.com")
     for r in hn_records:
-        total_checked += 1
         if r.get("is_quality", False):
-            quality_hits += 1
+            quality_scores.append(min(1.0, hn_base_score + 0.15))
+        else:
+            quality_scores.append(hn_base_score)
 
     # Wikipedia – discounted quality contribution
+    wiki_score = get_domain_score("wikipedia.org")
     wiki_weight = config.WIKIPEDIA_QUALITY_WEIGHT
-    if wiki_records:
-        wiki_quality = len(wiki_records) * wiki_weight
-        quality_hits += wiki_quality
-        total_checked += len(wiki_records)
+    for _r in wiki_records:
+        quality_scores.append(wiki_score * wiki_weight)
 
-    source_quality_value = (quality_hits / max(total_checked, 1)) if total_checked else 0.3
+    source_quality_value = (
+        (sum(quality_scores) / len(quality_scores)) if quality_scores else 0.3
+    )
+    quality_hits = sum(1 for s in quality_scores if s >= 0.7)
+    total_checked = len(quality_scores)
 
     signals.append(
         {
@@ -249,9 +260,54 @@ def compute_score(
     )
 
     # ------------------------------------------------------------------
+    # Signal 5: Fact-check verification (when available)
+    # ------------------------------------------------------------------
+    factcheck_rating = None
+    factcheck_confidence = 0.0
+    factcheck_sources: list[str] = []
+
+    if factcheck_results:
+        # Average the confidence scores from all fact-check results
+        confidences = [r.get("confidence", 0.5) for r in factcheck_results]
+        factcheck_confidence = sum(confidences) / len(confidences)
+        factcheck_sources = [
+            f"{r.get('publisher', 'Unknown')}" for r in factcheck_results
+        ]
+        # Use the first (most relevant) rating as the headline rating
+        factcheck_rating = factcheck_results[0].get("rating", "Unknown")
+
+        signals.append(
+            {
+                "name": "Fact-Check Verification",
+                "value": round(factcheck_confidence, 3),
+                "weight": config.WEIGHT_FACTCHECK,
+                "contribution": round(
+                    factcheck_confidence * config.WEIGHT_FACTCHECK * 100, 1
+                ),
+                "rationale": (
+                    f"Professional fact-check(s) found from "
+                    f"{', '.join(factcheck_sources)}. "
+                    f"Rating: '{factcheck_rating}' "
+                    f"(confidence: {factcheck_confidence:.2f})."
+                ),
+            }
+        )
+
+    # ------------------------------------------------------------------
     # Aggregate score
     # ------------------------------------------------------------------
     raw_score = sum(s["contribution"] for s in signals)
+
+    # When fact-check results exist, normalise so signals still fit 0-100
+    if factcheck_results:
+        total_weight = (
+            config.WEIGHT_CORROBORATION
+            + config.WEIGHT_CONTRADICTION
+            + config.WEIGHT_SOURCE_QUALITY
+            + config.WEIGHT_RECENCY
+            + config.WEIGHT_FACTCHECK
+        )
+        raw_score = raw_score / total_weight
     score = max(0, min(100, round(raw_score)))
 
     # Penalise if zero evidence at all
@@ -290,6 +346,40 @@ def compute_score(
         summary_parts.append(
             f"{quality_hits} item(s) came from reliable sources."
         )
+    if factcheck_results:
+        summary_parts.append(
+            f"Professional fact-check from {', '.join(factcheck_sources)}: "
+            f"'{factcheck_rating}'."
+        )
+
+    # Classify sources as supporting or contradicting
+    supporting_sources: list[str] = []
+    contradicting_sources: list[str] = []
+    for r in all_records:
+        text = " ".join(
+            str(r.get(k, "")) for k in ("title", "text", "snippet", "summary")
+        )
+        source_label = r.get("domain", r.get("source", "unknown"))
+        if _contains_contradiction(text):
+            contradicting_sources.append(source_label)
+        else:
+            supporting_sources.append(source_label)
+
+    # Build explanation string
+    explanation_parts: list[str] = []
+    if contradicting_sources:
+        explanation_parts.append(
+            f"Claim contradicted by {', '.join(set(contradicting_sources[:3]))}"
+        )
+    if factcheck_results and factcheck_confidence < 0.4:
+        explanation_parts.append(
+            f"and {factcheck_sources[0]} fact-check"
+        )
+    if not explanation_parts and supporting_sources:
+        explanation_parts.append(
+            f"Claim supported by {', '.join(set(supporting_sources[:3]))}"
+        )
+    explanation = " ".join(explanation_parts) if explanation_parts else "Insufficient evidence."
 
     return {
         "score": score,
@@ -300,11 +390,16 @@ def compute_score(
         "negative_signals": negative_signals,
         "summary": " ".join(summary_parts),
         "total_evidence": total_evidence,
+        "fact_check_rating": factcheck_rating,
+        "supporting_sources": list(set(supporting_sources)),
+        "contradicting_sources": list(set(contradicting_sources)),
+        "explanation": explanation,
         "source_counts": {
             "reddit": len(reddit_records),
             "wikipedia": len(wiki_records),
             "web": len(web_records),
             "hackernews": len(hn_records),
+            "factcheck": len(factcheck_results),
         },
         "analyzed_at": datetime.now(tz=timezone.utc).isoformat(),
     }

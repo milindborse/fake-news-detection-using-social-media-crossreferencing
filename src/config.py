@@ -104,6 +104,28 @@ HN_MIN_POINTS: int = int(os.getenv("HN_MIN_POINTS", "10"))
 WIKIPEDIA_QUALITY_WEIGHT: float = float(os.getenv("WIKIPEDIA_QUALITY_WEIGHT", "0.3"))
 
 # ---------------------------------------------------------------------------
+# Google Fact Check API
+# ---------------------------------------------------------------------------
+GOOGLE_FACTCHECK_API_KEY: str = os.getenv("GOOGLE_FACTCHECK_API_KEY", "")
+ENABLE_FACTCHECK: bool = os.getenv("ENABLE_FACTCHECK", "true").lower() == "true"
+FACTCHECK_MAX_RESULTS: int = int(os.getenv("FACTCHECK_MAX_RESULTS", "5"))
+
+# Weight given to fact-check evidence in the scoring pipeline.
+# This is separate from the 4-signal weights and acts as a strong
+# override when professional fact-check results are available.
+WEIGHT_FACTCHECK: float = float(os.getenv("WEIGHT_FACTCHECK", "0.40"))
+
+# ---------------------------------------------------------------------------
+# Semantic similarity settings
+# ---------------------------------------------------------------------------
+ENABLE_SEMANTIC: bool = os.getenv("ENABLE_SEMANTIC", "true").lower() == "true"
+SEMANTIC_MODEL_NAME: str = os.getenv("SEMANTIC_MODEL_NAME", "all-MiniLM-L6-v2")
+SEMANTIC_SIMILARITY_THRESHOLD: float = float(
+    os.getenv("SEMANTIC_SIMILARITY_THRESHOLD", "0.65")
+)
+SEMANTIC_MAX_TEXT_LENGTH: int = int(os.getenv("SEMANTIC_MAX_TEXT_LENGTH", "512"))
+
+# ---------------------------------------------------------------------------
 # Contradiction / debunking keywords
 # ---------------------------------------------------------------------------
 CONTRADICTION_KEYWORDS: list[str] = [

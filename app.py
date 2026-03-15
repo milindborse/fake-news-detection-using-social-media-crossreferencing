@@ -34,6 +34,7 @@ try:
         get_claim_summary,
     )
     from src.scoring.credibility import compute_score
+    from src.services.factcheck_service import search_fact_checks
 except ImportError as e:
     st.error(
         f"**Import error:** {e}\n\n"
@@ -113,6 +114,15 @@ def render_sidebar() -> None:
         st.markdown(
             f"{'✅' if config.ENABLE_HACKERNEWS else '⚠️'} **Hacker News** "
             f"({'enabled' if config.ENABLE_HACKERNEWS else 'disabled'})"
+        )
+        factcheck_ok = bool(config.GOOGLE_FACTCHECK_API_KEY) and config.ENABLE_FACTCHECK
+        st.markdown(
+            f"{'✅' if factcheck_ok else '⚠️'} **Fact Check API** "
+            f"({'ready' if factcheck_ok else 'no API key – disabled'})"
+        )
+        st.markdown(
+            f"{'✅' if config.ENABLE_SEMANTIC else 'ℹ️'} **Semantic Matching** "
+            f"({'enabled' if config.ENABLE_SEMANTIC else 'disabled'})"
         )
 
         st.divider()
@@ -208,6 +218,44 @@ def _render_hackernews_evidence(records: list[dict]) -> None:
         )
 
 
+def _render_factcheck_evidence(results: list[dict]) -> None:
+    """Render fact-check API results."""
+    if not results:
+        st.info("No professional fact-check results found.")
+        return
+    for r in results:
+        confidence_pct = f"{r.get('confidence', 0) * 100:.0f}%"
+        st.markdown(
+            f"""<div class="evidence-card">
+            <strong>✅ {r.get('claim', 'No claim text')}</strong><br/>
+            <small>Rating: <strong>{r.get('rating', 'Unknown')}</strong> &nbsp;|&nbsp;
+            Publisher: {r.get('publisher', 'Unknown')} &nbsp;|&nbsp;
+            Confidence: {confidence_pct}</small><br/>
+            <a href="{r.get('url', '#')}" target="_blank">View fact-check ↗</a>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+
+def _render_semantic_matches(matches: list[dict]) -> None:
+    """Render semantically matched evidence."""
+    if not matches:
+        st.info("No semantic matches above threshold.")
+        return
+    for m in matches:
+        sim_pct = f"{m.get('similarity', 0) * 100:.1f}%"
+        st.markdown(
+            f"""<div class="evidence-card">
+            <strong>🔗 {m.get('title', m.get('source', 'Unknown'))}</strong><br/>
+            <small>Source: {m.get('source', 'unknown')} &nbsp;|&nbsp;
+            Similarity: <strong>{sim_pct}</strong></small><br/>
+            <small>{m.get('text', '')[:300]}</small><br/>
+            <a href="{m.get('url', '#')}" target="_blank">View source ↗</a>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+
 def _render_signal_breakdown(signals: list[dict]) -> None:
     """Render the signal breakdown table."""
     if not signals:
@@ -283,7 +331,7 @@ def run_analysis(claim: str) -> None:
     # 4. Collect Hacker News evidence
     # ------------------------------------------------------------------
     status_text.text("Searching Hacker News…")
-    progress.progress(65)
+    progress.progress(55)
     try:
         hn_records, hn_meta = hackernews_collector.collect(claim)
         collector_metas.append(hn_meta)
@@ -291,12 +339,45 @@ def run_analysis(claim: str) -> None:
         collector_metas.append({"source": "hackernews", "error": True, "message": str(exc)})
 
     # ------------------------------------------------------------------
+    # 4b. Semantic similarity filtering (Feature 3)
+    # ------------------------------------------------------------------
+    semantic_matches = []
+    if config.ENABLE_SEMANTIC:
+        status_text.text("Computing semantic similarity…")
+        progress.progress(65)
+        try:
+            from src.nlp.semantic_matcher import find_semantic_matches
+            all_evidence = reddit_records + wiki_records + web_records + hn_records
+            semantic_matches = find_semantic_matches(claim, all_evidence)
+        except Exception as exc:  # noqa: BLE001
+            collector_metas.append(
+                {"source": "semantic_matcher", "error": True, "message": str(exc)}
+            )
+
+    # ------------------------------------------------------------------
+    # 4c. Fact-check API verification (Feature 1)
+    # ------------------------------------------------------------------
+    factcheck_results: list[dict] = []
+    if config.ENABLE_FACTCHECK:
+        status_text.text("Checking fact-check databases…")
+        progress.progress(75)
+        try:
+            factcheck_results = search_fact_checks(claim)
+        except Exception as exc:  # noqa: BLE001
+            collector_metas.append(
+                {"source": "factcheck", "error": True, "message": str(exc)}
+            )
+
+    # ------------------------------------------------------------------
     # 5. Compute score
     # ------------------------------------------------------------------
     status_text.text("Computing credibility score…")
-    progress.progress(85)
+    progress.progress(90)
     try:
-        result = compute_score(claim, reddit_records, wiki_records, web_records, hn_records)
+        result = compute_score(
+            claim, reddit_records, wiki_records, web_records, hn_records,
+            factcheck_results=factcheck_results,
+        )
     except Exception as exc:  # noqa: BLE001
         st.error(f"Scoring engine error: {exc}")
         st.text(traceback.format_exc())
@@ -320,7 +401,8 @@ def run_analysis(claim: str) -> None:
         f"Reddit: {sc.get('reddit', 0)} result(s)  |  "
         f"Wikipedia: {sc.get('wikipedia', 0)} result(s)  |  "
         f"Web: {sc.get('web', 0)} result(s)  |  "
-        f"Hacker News: {sc.get('hackernews', 0)} result(s)"
+        f"Hacker News: {sc.get('hackernews', 0)} result(s)  |  "
+        f"Fact-checks: {sc.get('factcheck', 0)} result(s)"
     )
 
     # Score + label
@@ -348,6 +430,16 @@ def run_analysis(claim: str) -> None:
     st.markdown("")
     st.markdown("**Summary**")
     st.write(result.get("summary", "No summary available."))
+
+    # Show fact-check rating if available
+    fact_check_rating = result.get("fact_check_rating")
+    if fact_check_rating:
+        st.markdown(f"**🔍 Fact-Check Rating:** `{fact_check_rating}`")
+
+    # Show explanation
+    explanation = result.get("explanation", "")
+    if explanation:
+        st.markdown(f"**💡 Explanation:** {explanation}")
 
     # ------------------------------------------------------------------
     # Explainability panel
@@ -388,6 +480,8 @@ def run_analysis(claim: str) -> None:
             f"📰 Reddit ({sc.get('reddit', 0)})",
             f"🔶 Hacker News ({sc.get('hackernews', 0)})",
             f"📖 Wikipedia ({sc.get('wikipedia', 0)})",
+            f"✅ Fact-Checks ({sc.get('factcheck', 0)})",
+            f"🔗 Semantic Matches ({len(semantic_matches)})",
         ]
     )
     with tabs[0]:
@@ -398,6 +492,10 @@ def run_analysis(claim: str) -> None:
         _render_hackernews_evidence(hn_records)
     with tabs[3]:
         _render_wikipedia_evidence(wiki_records)
+    with tabs[4]:
+        _render_factcheck_evidence(factcheck_results)
+    with tabs[5]:
+        _render_semantic_matches(semantic_matches)
 
     # ------------------------------------------------------------------
     # Collector status / warnings
@@ -425,7 +523,8 @@ def main() -> None:
     st.title("🔍 Fake News Detector")
     st.markdown(
         "Verify a news claim by cross-referencing **Reddit**, **Hacker News**, **Wikipedia**, "
-        "and **web/news sources**. Get an explainable credibility score."
+        "**web/news sources**, and **professional fact-check databases**. "
+        "Get an explainable credibility score powered by semantic similarity analysis."
     )
 
     st.divider()
@@ -478,8 +577,10 @@ def main() -> None:
             )
         with col_b:
             st.markdown(
-                "**2. We search the web**\n\n"
-                "The app queries Reddit, Hacker News, Wikipedia, and news sources in real time."
+                "**2. We search & verify**\n\n"
+                "The app queries Reddit, Hacker News, Wikipedia, news sources, "
+                "and professional fact-check databases. Evidence is matched "
+                "using semantic similarity."
             )
         with col_c:
             st.markdown(
