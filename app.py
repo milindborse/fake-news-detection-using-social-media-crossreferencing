@@ -331,7 +331,7 @@ def run_analysis(claim: str) -> None:
         color, "badge-orange"
     )
 
-    col_score, col_label = st.columns([1, 1])
+    col_score, col_label = st.columns(2)
     with col_score:
         st.markdown(
             f'<div class="score-badge {badge_class}">{score}/100</div>',

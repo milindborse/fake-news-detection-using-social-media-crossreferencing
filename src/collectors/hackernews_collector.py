@@ -25,8 +25,7 @@ _HN_SEARCH_URL = (
     "?query={query}&tags=story&hitsPerPage={limit}"
 )
 
-# Minimum HN points for a story to be considered a quality signal
-HN_MIN_POINTS: int = int(getattr(config, "HN_MIN_POINTS", 10))
+_HN_ITEM_BASE_URL = "https://news.ycombinator.com/item?id="
 
 
 def collect(
@@ -67,7 +66,7 @@ def collect(
             hits = data.get("hits") or []
 
             for hit in hits[:limit]:
-                story_url = hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID', '')}"
+                story_url = hit.get("url") or f"{_HN_ITEM_BASE_URL}{hit.get('objectID', '')}"
                 created_at = hit.get("created_at", "")
                 points = hit.get("points") or 0
                 num_comments = hit.get("num_comments") or 0
@@ -83,7 +82,7 @@ def collect(
                         "created_utc": created_at,
                         "url": story_url,
                         "domain": _domain_from_url(story_url),
-                        "is_quality": points >= HN_MIN_POINTS,
+                        "is_quality": points >= config.HN_MIN_POINTS,
                     }
                 )
 
