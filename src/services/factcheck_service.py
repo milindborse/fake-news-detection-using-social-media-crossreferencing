@@ -3,8 +3,7 @@ Google Fact Check Tools API integration.
 
 Queries Google's Fact Check API to retrieve professional fact-check
 verdicts for a given claim.  When no API key is configured, falls back
-to searching fact-check RSS feeds and DuckDuckGo site-scoped searches
-of known fact-check publishers.
+to searching fact-check RSS feeds of known fact-check publishers.
 
 Usage:
     from src.services.factcheck_service import search_fact_checks
@@ -48,7 +47,7 @@ def search_fact_checks(claim_text: str) -> list[FactCheckResult]:
     """Query the Google Fact Check Tools API for *claim_text*.
 
     When no API key is configured, falls back to searching fact-check
-    RSS feeds and DuckDuckGo site-scoped searches.
+    RSS feeds.
 
     Args:
         claim_text: The normalised claim to look up.
@@ -215,7 +214,7 @@ def _search_factcheck_rss(claim_text: str) -> list[FactCheckResult]:
 
             combined = (title + " " + desc).lower()
             overlap = sum(1 for kw in keywords if kw in combined)
-            if overlap < 1:
+            if overlap < 2:
                 continue
 
             # Try to infer a rating from the title/description
@@ -234,105 +233,16 @@ def _search_factcheck_rss(claim_text: str) -> list[FactCheckResult]:
     return results
 
 
-def _search_factcheck_ddg(claim_text: str) -> list[FactCheckResult]:
-    """Search DuckDuckGo scoped to fact-check sites for the claim."""
-    keywords = _extract_keywords(claim_text)
-    if not keywords:
-        return []
-
-    query_terms = " ".join(keywords[:5])
-    site_scope = "site:snopes.com OR site:politifact.com OR site:factcheck.org"
-    full_query = f"{query_terms} {site_scope}"
-    encoded = urllib.parse.quote(full_query)
-    url = f"https://html.duckduckgo.com/html/?q={encoded}"
-
-    raw = _fetch_url(url, timeout=config.REQUEST_TIMEOUT)
-    if not raw:
-        return []
-
-    html = raw.decode("utf-8", errors="replace")
-    results: list[FactCheckResult] = []
-    limit = config.FACTCHECK_MAX_RESULTS
-
-    title_pattern = re.compile(
-        r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
-        re.DOTALL,
-    )
-    snippet_pattern = re.compile(
-        r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-        re.DOTALL,
-    )
-
-    titles = title_pattern.findall(html)
-    snippets = snippet_pattern.findall(html)
-
-    for i, (href, raw_title) in enumerate(titles[:limit]):
-        title = re.sub(r"<[^>]+>", "", raw_title).strip()
-        snippet = ""
-        if i < len(snippets):
-            snippet = re.sub(r"<[^>]+>", "", snippets[i]).strip()
-
-        actual_url = href
-        if "uddg=" in href:
-            match = re.search(r"uddg=([^&]+)", href)
-            if match:
-                actual_url = urllib.parse.unquote(match.group(1))
-
-        if not title:
-            continue
-
-        # Determine publisher from URL domain
-        publisher = "Unknown"
-        try:
-            domain = urllib.parse.urlparse(actual_url).netloc.lower().lstrip("www.")
-        except Exception:  # noqa: BLE001
-            domain = ""
-        if domain == "snopes.com" or domain.endswith(".snopes.com"):
-            publisher = "Snopes"
-        elif domain == "politifact.com" or domain.endswith(".politifact.com"):
-            publisher = "PolitiFact"
-        elif domain == "factcheck.org" or domain.endswith(".factcheck.org"):
-            publisher = "FactCheck.org"
-
-        rating = _infer_rating_from_text(title + " " + snippet)
-
-        results.append({
-            "claim": title,
-            "rating": rating,
-            "publisher": publisher,
-            "url": actual_url,
-            "confidence": _normalise_rating(rating),
-        })
-
-    return results
-
-
 def _search_factcheck_free(claim_text: str) -> list[FactCheckResult]:
-    """Combine RSS and DuckDuckGo searches for fact-check results."""
+    """Search fact-check RSS feeds for results."""
     results: list[FactCheckResult] = []
 
-    # Try RSS feeds first
+    # Try RSS feeds
     try:
         rss_results = _search_factcheck_rss(claim_text)
         results.extend(rss_results)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Fact-check RSS search failed: %s", exc)
-
-    # Fill remaining with DuckDuckGo site-scoped search
-    remaining = config.FACTCHECK_MAX_RESULTS - len(results)
-    if remaining > 0:
-        try:
-            ddg_results = _search_factcheck_ddg(claim_text)
-            # Deduplicate by URL
-            existing_urls = {r["url"] for r in results}
-            for r in ddg_results:
-                if len(results) >= config.FACTCHECK_MAX_RESULTS:
-                    break
-                if r["url"] not in existing_urls:
-                    results.append(r)
-                    existing_urls.add(r["url"])
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Fact-check DuckDuckGo search failed: %s", exc)
 
     return results
 

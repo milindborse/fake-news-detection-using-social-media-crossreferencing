@@ -117,7 +117,7 @@ def render_sidebar() -> None:
         )
         factcheck_ok = bool(config.GOOGLE_FACTCHECK_API_KEY) and config.ENABLE_FACTCHECK
         if config.ENABLE_FACTCHECK and not config.GOOGLE_FACTCHECK_API_KEY:
-            factcheck_label = "free fallback (RSS + DuckDuckGo)"
+            factcheck_label = "free fallback (RSS feeds)"
         elif factcheck_ok:
             factcheck_label = "ready (Google API)"
         else:
@@ -383,6 +383,7 @@ def run_analysis(claim: str) -> None:
         result = compute_score(
             claim, reddit_records, wiki_records, web_records, hn_records,
             factcheck_results=factcheck_results,
+            semantic_matches=semantic_matches,
         )
     except Exception as exc:  # noqa: BLE001
         st.error(f"Scoring engine error: {exc}")
@@ -529,7 +530,7 @@ def main() -> None:
     st.title("🔍 Fake News Detector")
     st.markdown(
         "Verify a news claim by cross-referencing **Reddit**, **Hacker News**, **Wikipedia**, "
-        "**web/news sources**, and **professional fact-check databases**. "
+        "**news feeds**, and **professional fact-check databases**. "
         "Get an explainable credibility score powered by semantic similarity analysis."
     )
 
@@ -584,9 +585,9 @@ def main() -> None:
         with col_b:
             st.markdown(
                 "**2. We search & verify**\n\n"
-                "The app queries Reddit, Hacker News, Wikipedia, news sources, "
+                "The app queries Reddit, Hacker News, Wikipedia, news feeds, "
                 "and professional fact-check databases. Evidence is matched "
-                "using semantic similarity."
+                "using semantic similarity to verify relevance."
             )
         with col_c:
             st.markdown(

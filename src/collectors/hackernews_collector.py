@@ -65,11 +65,17 @@ def collect(
 
 
 def _search_hn(query: str, limit: int, meta: dict[str, Any]) -> list[HNRecord]:
-    """Execute a single HN Algolia search and return records."""
+    """Execute a single HN Algolia search and return records.
+
+    Results are post-filtered to require at least 2 query keywords
+    in the title or story text, preventing loosely related stories
+    from inflating the credibility score.
+    """
     encoded_query = urllib.parse.quote(query)
     url = _HN_SEARCH_URL.format(query=encoded_query, limit=limit)
 
     headers = {"User-Agent": "news-credibility-checker/0.1"}
+    keywords = set(query.lower().split())
 
     records: list[HNRecord] = []
 
@@ -82,7 +88,18 @@ def _search_hn(query: str, limit: int, meta: dict[str, Any]) -> list[HNRecord]:
             data = json.loads(raw.decode("utf-8", errors="replace"))
             hits = data.get("hits") or []
 
-            for hit in hits[:limit]:
+            for hit in hits:
+                if len(records) >= limit:
+                    break
+                title = hit.get("title", "")
+                story_text = hit.get("story_text") or ""
+                combined = (title + " " + story_text).lower()
+
+                # Require at least 2 keyword matches to filter loosely related stories
+                overlap = sum(1 for kw in keywords if kw in combined and len(kw) >= 3)
+                if overlap < 2 and keywords:
+                    continue
+
                 story_url = hit.get("url") or f"{_HN_ITEM_BASE_URL}{hit.get('objectID', '')}"
                 created_at = hit.get("created_at", "")
                 points = hit.get("points") or 0
@@ -91,8 +108,8 @@ def _search_hn(query: str, limit: int, meta: dict[str, Any]) -> list[HNRecord]:
                 records.append(
                     {
                         "source": "hackernews",
-                        "title": hit.get("title", ""),
-                        "text": (hit.get("story_text") or "")[:500],
+                        "title": title,
+                        "text": story_text[:500],
                         "author": hit.get("author", ""),
                         "points": points,
                         "num_comments": num_comments,
