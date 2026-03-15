@@ -19,6 +19,9 @@ from src import config
 
 logger = logging.getLogger(__name__)
 
+# Small constant to avoid division by zero in cosine similarity
+_EPSILON = 1e-10
+
 # ---------------------------------------------------------------------------
 # Lazy-loaded model singleton
 # ---------------------------------------------------------------------------
@@ -149,9 +152,9 @@ def _cosine_similarity_batch(
 ) -> np.ndarray:
     """Compute cosine similarity between a single query and multiple candidates."""
     # Normalise vectors
-    query_norm = query / (np.linalg.norm(query) + 1e-10)
+    query_norm = query / (np.linalg.norm(query) + _EPSILON)
     candidate_norms = candidates / (
-        np.linalg.norm(candidates, axis=1, keepdims=True) + 1e-10
+        np.linalg.norm(candidates, axis=1, keepdims=True) + _EPSILON
     )
     similarities = candidate_norms @ query_norm
     return similarities

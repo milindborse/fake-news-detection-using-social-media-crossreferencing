@@ -372,9 +372,12 @@ def compute_score(
             f"Claim contradicted by {', '.join(set(contradicting_sources[:3]))}"
         )
     if factcheck_results and factcheck_confidence < 0.4:
-        explanation_parts.append(
-            f"and {factcheck_sources[0]} fact-check"
-        )
+        if explanation_parts:
+            explanation_parts.append(f"and {factcheck_sources[0]} fact-check")
+        else:
+            explanation_parts.append(
+                f"Claim rated low-credibility by {factcheck_sources[0]} fact-check"
+            )
     if not explanation_parts and supporting_sources:
         explanation_parts.append(
             f"Claim supported by {', '.join(set(supporting_sources[:3]))}"
