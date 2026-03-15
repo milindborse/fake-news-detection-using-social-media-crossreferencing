@@ -6,6 +6,7 @@ Tests for the three new features:
 """
 
 import unittest
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -111,8 +112,12 @@ class TestFactCheckService(unittest.TestCase):
     @patch("src.services.factcheck_service.config")
     def test_search_fact_checks_no_api_key(self, mock_config):
         mock_config.GOOGLE_FACTCHECK_API_KEY = ""
+        mock_config.FACTCHECK_MAX_RESULTS = 5
+        mock_config.MAX_RETRIES = 1
+        mock_config.REQUEST_TIMEOUT = 5
         results = search_fact_checks("test claim")
-        self.assertEqual(results, [])
+        # With no API key and no network, should return empty or fallback results
+        self.assertIsInstance(results, list)
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +226,172 @@ class TestCredibilityScoringIntegration(unittest.TestCase):
         self.assertIn("contradicting_sources", result)
         self.assertIn("explanation", result)
         self.assertIn("fact_check_rating", result)
+
+
+# ---------------------------------------------------------------------------
+# Test: Fact-check free fallback functions
+# ---------------------------------------------------------------------------
+
+from src.services.factcheck_service import (
+    _infer_rating_from_text,
+    _extract_keywords,
+)
+
+
+class TestFactCheckFreeFallback(unittest.TestCase):
+    """Tests for free fact-check fallback functions."""
+
+    def test_infer_rating_false(self):
+        self.assertEqual(_infer_rating_from_text("This claim is False"), "False")
+
+    def test_infer_rating_true(self):
+        self.assertEqual(_infer_rating_from_text("Claim confirmed True"), "True")
+
+    def test_infer_rating_misleading(self):
+        self.assertEqual(
+            _infer_rating_from_text("Misleading claim about vaccines"), "Misleading"
+        )
+
+    def test_infer_rating_mostly_false(self):
+        self.assertEqual(
+            _infer_rating_from_text("Mostly False: politicians exaggerated"), "Mostly False"
+        )
+
+    def test_infer_rating_mixture(self):
+        self.assertEqual(
+            _infer_rating_from_text("A mixture of truth and fiction"), "Mixture"
+        )
+
+    def test_infer_rating_unknown(self):
+        self.assertEqual(
+            _infer_rating_from_text("Regular news article"), "Under Review"
+        )
+
+    def test_extract_keywords_basic(self):
+        keywords = _extract_keywords("The president signed a new bill")
+        self.assertIn("president", keywords)
+        self.assertIn("signed", keywords)
+        self.assertIn("new", keywords)
+        self.assertIn("bill", keywords)
+        # Stopwords should be excluded
+        self.assertNotIn("the", keywords)
+
+    def test_extract_keywords_empty(self):
+        keywords = _extract_keywords("")
+        self.assertEqual(keywords, [])
+
+
+# ---------------------------------------------------------------------------
+# Test: Web collector DuckDuckGo fallback
+# ---------------------------------------------------------------------------
+
+from src.collectors.web_collector import _collect_duckduckgo, _collect_rss
+
+
+class TestWebCollectorImprovements(unittest.TestCase):
+    """Tests for web collector improvements."""
+
+    def test_rss_keyword_matching_relaxed(self):
+        """Verify RSS matching works with single keyword overlap."""
+        from xml.etree.ElementTree import Element, SubElement, tostring
+        from unittest.mock import patch
+
+        # Build a minimal RSS feed with an item matching 1 keyword
+        rss = Element("rss")
+        channel = SubElement(rss, "channel")
+        item = SubElement(channel, "item")
+        SubElement(item, "title").text = "New planet discovered by NASA"
+        SubElement(item, "link").text = "https://example.com/article"
+        SubElement(item, "description").text = "Scientists found a new planet."
+        SubElement(item, "pubDate").text = "Mon, 01 Jan 2024 00:00:00 GMT"
+
+        feed_xml = tostring(rss, encoding="unicode")
+
+        with patch("src.collectors.web_collector._fetch_url", return_value=feed_xml.encode("utf-8")):
+            records = _collect_rss("planet habitable zone", limit=5)
+            # Should match because "planet" (>= 3 chars) appears in the item
+            self.assertGreaterEqual(len(records), 1)
+            self.assertEqual(records[0]["title"], "New planet discovered by NASA")
+
+    def test_duckduckgo_parses_html(self):
+        """Test DuckDuckGo HTML parser with sample HTML."""
+        from unittest.mock import patch
+
+        sample_html = '''
+        <div class="result">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fnews&amp;rut=abc">
+                Test News Article
+            </a>
+            <a class="result__snippet">A snippet about the article.</a>
+        </div>
+        '''
+
+        with patch("src.collectors.web_collector._fetch_url", return_value=sample_html.encode("utf-8")):
+            records = _collect_duckduckgo("test query", limit=5)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["title"], "Test News Article")
+            self.assertEqual(records[0]["url"], "https://example.com/news")
+            self.assertEqual(records[0]["provider"], "duckduckgo")
+
+
+# ---------------------------------------------------------------------------
+# Test: HN collector fallback behavior
+# ---------------------------------------------------------------------------
+
+from src.collectors.hackernews_collector import _search_hn
+
+
+class TestHNCollectorImprovements(unittest.TestCase):
+    """Tests for Hacker News collector improvements."""
+
+    def test_search_hn_returns_records(self):
+        """Test _search_hn parses Algolia response correctly."""
+        from unittest.mock import patch, MagicMock
+        import json
+
+        sample_response = json.dumps({
+            "hits": [
+                {
+                    "title": "Test Story",
+                    "url": "https://example.com/story",
+                    "created_at": "2024-01-01T00:00:00.000Z",
+                    "points": 100,
+                    "num_comments": 50,
+                    "author": "testuser",
+                    "objectID": "12345",
+                    "story_text": "",
+                }
+            ]
+        }).encode("utf-8")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = sample_response
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        meta: dict[str, Any] = {"source": "hackernews"}
+        with patch("src.collectors.hackernews_collector.urlopen", return_value=mock_resp):
+            records = _search_hn("test query", 5, meta)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["title"], "Test Story")
+            self.assertEqual(records[0]["source"], "hackernews")
+
+    def test_search_hn_empty_response(self):
+        """Test _search_hn handles empty response."""
+        from unittest.mock import patch, MagicMock
+        import json
+
+        sample_response = json.dumps({"hits": []}).encode("utf-8")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = sample_response
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        meta: dict[str, Any] = {"source": "hackernews"}
+        with patch("src.collectors.hackernews_collector.urlopen", return_value=mock_resp):
+            records = _search_hn("obscure query", 5, meta)
+            self.assertEqual(len(records), 0)
 
 
 if __name__ == "__main__":

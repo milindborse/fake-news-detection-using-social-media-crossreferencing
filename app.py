@@ -116,9 +116,15 @@ def render_sidebar() -> None:
             f"({'enabled' if config.ENABLE_HACKERNEWS else 'disabled'})"
         )
         factcheck_ok = bool(config.GOOGLE_FACTCHECK_API_KEY) and config.ENABLE_FACTCHECK
+        if config.ENABLE_FACTCHECK and not config.GOOGLE_FACTCHECK_API_KEY:
+            factcheck_label = "free fallback (RSS + DuckDuckGo)"
+        elif factcheck_ok:
+            factcheck_label = "ready (Google API)"
+        else:
+            factcheck_label = "disabled"
         st.markdown(
-            f"{'✅' if factcheck_ok else '⚠️'} **Fact Check API** "
-            f"({'ready' if factcheck_ok else 'no API key – disabled'})"
+            f"{'✅' if config.ENABLE_FACTCHECK else '⚠️'} **Fact Check** "
+            f"({factcheck_label})"
         )
         st.markdown(
             f"{'✅' if config.ENABLE_SEMANTIC else 'ℹ️'} **Semantic Matching** "

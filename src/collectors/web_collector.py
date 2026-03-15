@@ -32,6 +32,10 @@ _RSS_FEEDS: list[str] = [
     "https://www.theguardian.com/world/rss",
     "https://feeds.npr.org/1001/rss.xml",
     "https://apnews.com/apf-topnews?format=rss",
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+    "https://www.theguardian.com/science/rss",
 ]
 
 _GDELT_BASE = (
@@ -65,8 +69,13 @@ def _fetch_url(url: str, timeout: int = 10) -> bytes | None:
 
 
 def _collect_gdelt(query: str, limit: int) -> list[WebRecord]:
-    """Fetch news articles from GDELT API."""
-    encoded_query = urllib.parse.quote(query)
+    """Fetch news articles from GDELT API.
+
+    Uses a shorter keyword query (top 4) to improve recall.
+    """
+    # Use fewer keywords for a broader GDELT search
+    short_query = " ".join(query.split()[:4])
+    encoded_query = urllib.parse.quote(short_query)
     url = _GDELT_BASE.format(limit=limit, query=encoded_query)
     raw = _fetch_url(url, timeout=config.REQUEST_TIMEOUT)
     if not raw:
@@ -114,33 +123,33 @@ def _collect_rss(query: str, limit: int) -> list[WebRecord]:
             continue
 
         # Handle both RSS 2.0 and Atom
-        items = root.findall(".//item") or root.findall(
-            ".//{http://www.w3.org/2005/Atom}entry"
-        )
+        items = root.findall(".//item")
+        if not items:
+            items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
 
         for item in items:
-            title_el = item.find("title") or item.find(
-                "{http://www.w3.org/2005/Atom}title"
-            )
-            link_el = item.find("link") or item.find(
-                "{http://www.w3.org/2005/Atom}link"
-            )
-            desc_el = item.find("description") or item.find(
-                "{http://www.w3.org/2005/Atom}summary"
-            )
-            pub_el = item.find("pubDate") or item.find(
-                "{http://www.w3.org/2005/Atom}updated"
-            )
+            title_el = item.find("title")
+            if title_el is None:
+                title_el = item.find("{http://www.w3.org/2005/Atom}title")
+            link_el = item.find("link")
+            if link_el is None:
+                link_el = item.find("{http://www.w3.org/2005/Atom}link")
+            desc_el = item.find("description")
+            if desc_el is None:
+                desc_el = item.find("{http://www.w3.org/2005/Atom}summary")
+            pub_el = item.find("pubDate")
+            if pub_el is None:
+                pub_el = item.find("{http://www.w3.org/2005/Atom}updated")
 
             title = (title_el.text or "") if title_el is not None else ""
             link_text = (link_el.text or link_el.get("href", "")) if link_el is not None else ""
             desc = re.sub(r"<[^>]+>", "", (desc_el.text or "") if desc_el is not None else "")[:300]
             pub = (pub_el.text or "") if pub_el is not None else ""
 
-            # Simple keyword relevance check
+            # Simple keyword relevance check (relaxed: 1 keyword match is enough)
             combined = (title + " " + desc).lower()
-            overlap = sum(1 for kw in keywords if kw in combined and len(kw) > 3)
-            if overlap < 2 and keywords:
+            overlap = sum(1 for kw in keywords if kw in combined and len(kw) >= 3)
+            if overlap < 1 and keywords:
                 continue
 
             item_url = link_text.strip()
@@ -157,6 +166,62 @@ def _collect_rss(query: str, limit: int) -> list[WebRecord]:
             )
             if len(records) >= limit:
                 break
+
+    return records
+
+
+def _collect_duckduckgo(query: str, limit: int) -> list[WebRecord]:
+    """Scrape DuckDuckGo HTML search results as a last-resort fallback."""
+    encoded_query = urllib.parse.quote(query)
+    url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+    raw = _fetch_url(url, timeout=config.REQUEST_TIMEOUT)
+    if not raw:
+        return []
+
+    html = raw.decode("utf-8", errors="replace")
+    records: list[WebRecord] = []
+
+    # Parse result blocks: each result has class="result__a" for title/link
+    # and class="result__snippet" for the snippet
+    title_pattern = re.compile(
+        r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
+        re.DOTALL,
+    )
+    snippet_pattern = re.compile(
+        r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+        re.DOTALL,
+    )
+
+    titles = title_pattern.findall(html)
+    snippets = snippet_pattern.findall(html)
+
+    for i, (href, raw_title) in enumerate(titles[:limit]):
+        title = re.sub(r"<[^>]+>", "", raw_title).strip()
+        snippet = ""
+        if i < len(snippets):
+            snippet = re.sub(r"<[^>]+>", "", snippets[i]).strip()
+
+        # DuckDuckGo wraps URLs via a redirect; extract the actual URL
+        actual_url = href
+        if "uddg=" in href:
+            match = re.search(r"uddg=([^&]+)", href)
+            if match:
+                actual_url = urllib.parse.unquote(match.group(1))
+
+        if not title:
+            continue
+
+        records.append(
+            {
+                "source": "web",
+                "title": title,
+                "snippet": snippet[:300],
+                "domain": _domain_from_url(actual_url),
+                "published_date": "",
+                "url": actual_url,
+                "provider": "duckduckgo",
+            }
+        )
 
     return records
 
@@ -202,6 +267,16 @@ def collect(
             meta["rss_count"] = len(rss_records)
         except Exception as exc:  # noqa: BLE001
             meta["rss_error"] = str(exc)
+
+    # 3. DuckDuckGo HTML scrape (fill remaining slots as last resort)
+    remaining = limit - len(records)
+    if remaining > 0:
+        try:
+            ddg_records = _collect_duckduckgo(query, remaining)
+            records.extend(ddg_records)
+            meta["duckduckgo_count"] = len(ddg_records)
+        except Exception as exc:  # noqa: BLE001
+            meta["duckduckgo_error"] = str(exc)
 
     # Deduplicate by URL
     seen_urls: set[str] = set()
